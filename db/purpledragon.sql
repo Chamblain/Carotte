@@ -1,0 +1,68 @@
+-- Création de la base de données
+CREATE DATABASE IF NOT EXISTS purpledragon
+DEFAULT CHARACTER SET utf8mb4
+COLLATE utf8mb4_general_ci;
+
+USE purpledragon;
+
+-- Table Etudiant
+CREATE TABLE Etudiant(
+  etu_num INT AUTO_INCREMENT,
+  etu_nom VARCHAR(255),
+  etu_prenom VARCHAR(255),
+  PRIMARY KEY(etu_num)
+);
+
+INSERT INTO Etudiant (etu_num, etu_nom, etu_prenom) VALUES
+(1, 'Thompson', 'Allan'),
+(2, 'Castafiore', 'Bianca'),
+(3, 'Lampion', 'Seraphin'),
+(4, 'Da Figueira', 'Oliveira');
+
+-- Table Type
+CREATE TABLE Type(
+  type_operation VARCHAR(255),
+  PRIMARY KEY(type_operation)
+);
+
+INSERT INTO Type (type_operation)
+VALUES ('Bonus'), ('Recharge'), ('Depense'), ('Bonus transfere');
+
+-- Table Compte
+CREATE TABLE Compte(
+  etu_num INT,
+  opr_date DATETIME,
+  opr_montant DECIMAL(15,2) NULL DEFAULT '0.00',
+  opr_libelle VARCHAR(50),
+  type_operation VARCHAR(255) NOT NULL,
+  PRIMARY KEY(etu_num, opr_date),
+  FOREIGN KEY(etu_num) REFERENCES Etudiant(etu_num),
+  FOREIGN KEY(type_operation) REFERENCES Type(type_operation)
+);
+
+INSERT INTO Compte (etu_num, opr_date, opr_montant, opr_libelle, type_operation) VALUES
+(1, '2023-03-09 09:15:34', '1.00', 'Initial', 'Bonus'),
+(1, '2023-05-15 15:18:44', '-0.20', 'Cafe', 'Depense'),
+(1, '2023-07-11 11:14:05', '-0.20', 'Chocolat', 'Depense'),
+(1, '2023-07-24 15:20:20', '-0.20', 'Cafe', 'Depense'),
+(2, '2023-05-09 11:18:32', '1.00', 'Atelier Avec Dupont', 'Bonus'),
+(2, '2023-05-16 08:23:32', '1.00', 'Initial', 'Bonus'),
+(2, '2023-07-04 15:24:35', '1.00', 'Projet avec Pr Tournesol', 'Bonus'),
+(2, '2023-07-06 15:24:35', '-0.20', 'The', 'Depense'),
+(2, '2023-07-26 15:23:32', '1.00', 'Chanson opera', 'Bonus'),
+(3, '2023-05-18 15:26:38', '1.00', 'Initial', 'Bonus'),
+(4, '2023-07-13 15:27:04', '1.00', 'Initial', 'Bonus'),
+(4, '2023-07-21 13:10:40', '-0.20', 'Cafe', 'Depense');
+
+-- Tests : solvabilité
+
+-- Solde total d’un étudiant
+SELECT SUM(opr_montant) AS solde
+FROM Compte
+WHERE etu_num = 1;
+
+-- Solde total de tous les étudiants
+SELECT Etudiant.*, SUM(Compte.opr_montant) AS solde
+FROM Etudiant, Compte
+WHERE Etudiant.etu_num = Compte.etu_num
+GROUP BY Compte.etu_num;
