@@ -221,29 +221,10 @@ void lire_perso()
 
 uint16_t ee_solde EEMEM = 0;
 
-// lecture du solde
+// lecture du solde (big-endian, comme dans le sujet)
 void lire_solde()
 {
-	uint16_t s;
-	if (p3!=2)
-	{
-		sw1=0x6c;
-		sw2=2;
-		return;
-	}
-	sendbytet0(ins);
-	s=eeprom_read_word(&ee_solde);
-	sendbytet0(s&0xff);	// convention little endian
-	sendbytet0(s>>8);
-	sw1=0x90;
-}
-
-// crédit
-// crédit
-void credit()
-{
-    uint16_t s;
-    uint16_t c;
+    uint16_t mot;
 
     if (p3!=2)
     {
@@ -251,22 +232,48 @@ void credit()
         sw2=2;
         return;
     }
-    sendbytet0(ins);
-    // lire le montant à créditer (LSB puis MSB, comme dans lire_solde)
-    c = recbytet0();
-    c += (uint16_t)recbytet0() << 8;
 
-    s = eeprom_read_word(&ee_solde);
-    s += c;
+    sendbytet0(ins); // acquittement
 
-    // détection de dépassement de capacité
-    if (s < c)
+    mot = eeprom_read_word(&ee_solde);
+    // big-endian : d'abord octet de poids fort, puis octet de poids faible
+    sendbytet0(mot >> 8);        // MSB
+    sendbytet0(mot & 0xff);      // LSB
+
+    sw1=0x90;
+}
+
+// crédit
+// crédit
+void credit()
+{
+    uint16_t s;
+    uint16_t ajout;
+
+    if (p3!=2)
     {
-        sw1 = 0x61;
+        sw1=0x6c;
+        sw2=2;
         return;
     }
 
-    // 🔒 anti-arrachement : écriture du solde sous transaction
+    sendbytet0(ins); // acquittement
+
+    // big-endian : d'abord MSB, puis LSB
+    ajout  = (uint16_t)recbytet0() << 8;
+    ajout |= (uint16_t)recbytet0();
+
+    s = eeprom_read_word(&ee_solde);
+    s += ajout;
+
+    // détection de dépassement de capacité
+    if (s < ajout)
+    {
+        sw1 = 0x61;   // capacité max dépassée
+        return;
+    }
+
+    // écriture sous transaction (anti-arrachement)
     engage(2, (uint8_t*)&s, (uint8_t*)&ee_solde, 0);
     valide();
 
@@ -274,96 +281,126 @@ void credit()
 }
 
 
+
+
 // débit
 void debit()
 {
-	uint16_t s;
-	uint16_t d;
-	if (p3!=2)
-	{
-		sw1=0x6c;
-		sw2=2;
-		return;
-	}
-	sendbytet0(ins);
-	d=recbytet0();
-	d+=(uint16_t)recbytet0()<<8;
-	s=eeprom_read_word(&ee_solde);
-	if (d>s)
-	{
-		sw1=0x61;
-		return;
-	}
-	s-=d;
-	engage(2,&s,&ee_solde,0);
-	valide();
-	sw1=0x90;
+    uint16_t s;
+    uint16_t retrait;
+
+    if (p3!=2)
+    {
+        sw1=0x6c;
+        sw2=2;
+        return;
+    }
+
+    sendbytet0(ins); // acquittement
+
+    // big-endian : MSB puis LSB
+    retrait  = (uint16_t)recbytet0() << 8;
+    retrait |= (uint16_t)recbytet0();
+
+    s = eeprom_read_word(&ee_solde);
+    if (retrait > s)
+    {
+        sw1 = 0x61;   // solde insuffisant
+        return;
+    }
+
+    s -= retrait;
+
+    engage(2,(uint8_t*)&s,(uint8_t*)&ee_solde,0);
+    valide();
+
+    sw1 = 0x90;
 }
 
+
+// Programme principal
+//--------------------
 // Programme principal
 //--------------------
 int main(void)
 {
-  	// initialisation des ports
-  	ACSR=0x80;
-	PRR=0x87;
-  	PORTB=0xff;
-  	DDRB=0xff;
-  	PORTC=0xff;
-  	DDRC=0xff;
-  	DDRD=0x00;
-  	PORTD=0xff;
-	ASSR=(1<<EXCLK)+(1<<AS2);
+    // initialisation des ports
+    ACSR = 0x80;
+    PRR  = 0x87;
+    PORTB = 0xff;
+    DDRB  = 0xff;
+    PORTC = 0xff;
+    DDRC  = 0xff;
+    DDRD  = 0x00;
+    PORTD = 0xff;
+    ASSR  = (1<<EXCLK) + (1<<AS2);
 
-  	
-	
-	// ATR
-  	atr();
-  	valide();
-	sw2=0;		// pour éviter de le répéter dans toutes les commandes
-  	// boucle de traitement des commandes
-  	for(;;)
- 	{
-    		// lecture de l'entête
-    		cla=recbytet0();
-    		ins=recbytet0();
-    		p1=recbytet0();
-	    	p2=recbytet0();
-    		p3=recbytet0();
-	    	sw2=0;
-		switch (cla)
-		{
-	  	case 0x81:
-		    	switch(ins)
-			{
-			case 0:
-				version();
-				break;
-			case 1:
-				intro_perso();
-				break;
-			case 2:
-				lire_perso();
-				break;
-			case 3:
-				lire_solde();
-				break;
-			case 4:
-				credit();
-				break;
-			case 5:
-				debit();
-				break;
-            		default:
-		    		sw1=0x6d; // code erreur ins inconnu
-        		}
-			break;
-      		default:
-        		sw1=0x6e; // code erreur classe inconnue
-		}
-		sendbytet0(sw1); // envoi du status word
-		sendbytet0(sw2);
-  	}
-  	return 0;
+    // ATR
+    atr();
+    valide();   // termine une éventuelle transaction en cours
+
+    // boucle de traitement des commandes
+    for (;;)
+    {
+        // lecture de l'en-tête APDU
+        cla = recbytet0();
+        ins = recbytet0();
+        p1  = recbytet0();
+        p2  = recbytet0();
+        p3  = recbytet0();
+
+        sw2 = 0;   // SW2 à 0 par défaut
+
+        switch (cla)
+        {
+        case 0x81: // classe personnalisation
+            switch (ins)
+            {
+            case 0:
+                version();
+                break;
+            case 1:
+                intro_perso();
+                break;
+            case 2:
+                lire_perso();
+                break;
+            default:
+                sw1 = 0x6d;  // INS inconnu
+                break;
+            }
+            break;
+
+        case 0x82: // classe paiement
+            switch (ins)
+            {
+            case 1:
+                lire_solde();
+                break;
+            case 2:
+                credit();
+                break;
+            case 3:
+                debit();
+                break;
+            default:
+                sw1 = 0x6d;  // INS inconnu
+                break;
+            }
+            break;
+
+        default:
+            sw1 = 0x6e;      // CLA inconnue
+            break;
+        }
+
+        // envoi du status word
+        sendbytet0(sw1);
+        sendbytet0(sw2);
+    }
+
+    // on ne sort jamais de la boucle
+    return 0;
 }
+
 
