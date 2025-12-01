@@ -1,0 +1,12 @@
+sudo mysql -u root -p < purpledragon.sql
+mysql -u root -p
+CREATE USER 'rodelika'@'localhost' IDENTIFIED BY 'R0deLika123!';
+GRANT ALL PRIVILEGES ON purpledragon.* TO 'rodelika'@'localhost';
+FLUSH PRIVILEGES;
+EXIT;
+
+et ducoup 
+
+mysql -u rodelika -p
+# mot de passe : R0deLika123!
+
