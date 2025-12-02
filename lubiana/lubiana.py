@@ -268,13 +268,8 @@ def main():
             connection.disconnect()
         except Exception:
             pass
->>>>>>> b5b6a56 (Ajout de lubiana et rubrovitamin fait il y a longtemps)
 
 
 if __name__ == "__main__":
     main()
-<<<<<<< HEAD
 
-
-=======
->>>>>>> b5b6a56 (Ajout de lubiana et rubrovitamin fait il y a longtemps)
