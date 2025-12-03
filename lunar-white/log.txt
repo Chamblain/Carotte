@@ -1,0 +1,3 @@
+2025-12-03 18:09:01;thé;0.20;0.60;0.40;OK
+date: 2025-12-03 18:14:29 | boisson: thé | prix: 0.20€ | solde_initial: 0.40€ | solde_final: 0.20€ | statut: OK
+date: 2025-12-03 18:14:31 | boisson: café | prix: 0.20€ | solde_initial: 0.20€ | solde_final: 0.00€ | statut: OK

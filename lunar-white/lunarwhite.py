@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-
+from datetime import datetime
 from smartcard.System import readers
 from smartcard.Exceptions import CardConnectionException
 from smartcard.util import toHexString
@@ -79,6 +79,18 @@ def debiter(conn, montant_euros):
         return False
 
 
+def log_transaction(nom_boisson, prix, solde_initial, solde_final, statut):
+    with open("log.txt", "a") as f:
+        f.write(
+            f"date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | "
+            f"boisson: {nom_boisson} | "
+            f"prix: {prix:.2f}€ | "
+            f"solde_initial: {solde_initial:.2f}€ | "
+            f"solde_final: {solde_final:.2f}€ | "
+            f"statut: {statut}\n"
+        )
+
+
 def afficher_menu(solde):
     print("")
     print("===== Machine à café - Lunar White =====")
@@ -99,6 +111,8 @@ def commander_boisson(conn, nom_boisson, prix):
 
     if solde < prix:
         print(f"Solde insuffisant ({solde:.2f} €). Boisson non servie.")
+        # log refus solde insuffisant
+        log_transaction(nom_boisson, prix, solde, solde, "REFUS_SOLDE")
         return
 
     print(f"Tentative de débit de {prix:.2f} € pour un {nom_boisson}...")
@@ -107,8 +121,17 @@ def commander_boisson(conn, nom_boisson, prix):
         print("Boisson servie. Merci !")
         if nouveau_solde is not None:
             print(f"Nouveau solde : {nouveau_solde:.2f} €")
+            # log succès
+            log_transaction(nom_boisson, prix, solde, nouveau_solde, "OK")
+        else:
+            # on log quand même, même si on n'a pas pu relire le solde
+            log_transaction(nom_boisson, prix, solde, solde - prix, "OK_SOLDE_INCONNU")
     else:
         print("Débit refusé. Boisson non servie.")
+        # log autre refus (erreur APDU, etc.)
+        log_transaction(nom_boisson, prix, solde, solde, "REFUS_AUTRE")
+
+
 
 
 def main():
