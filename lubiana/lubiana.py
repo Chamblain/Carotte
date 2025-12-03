@@ -1,3 +1,34 @@
+def afficher_menu():
+    print("==== LUBIANA ====")
+    print("1. Afficher version carte")
+    print("2. Afficher données carte")
+    print("3. Attribuer la carte")
+    print("4. Créditer la carte (solde initial)")
+    print("5. Lire le solde")
+    print("0. Quitter")
+
+
+def main():
+    while True:
+        afficher_menu()
+        choix = input("Choix : ")
+
+        if choix == "1":
+            print("Lecture version (à implémenter)")
+        elif choix == "2":
+            print("Lecture données (à implémenter)")
+        elif choix == "3":
+            print("Attribution carte (à implémenter)")
+        elif choix == "4":
+            print("Crédit initial (à implémenter)")
+        elif choix == "5":
+            print("Lecture solde (à implémenter)")
+        elif choix == "0":
+            print("Au revoir")
+            break
+        else:
+            print("Choix invalide")
+
 #!/usr/bin/env python3
 """
 Client de personnalisation : Lubiana.
@@ -181,19 +212,24 @@ def lire_solde(connection):
 
 
 def mettre_solde_initial(connection):
-    """
-    Envoie un crédit de 1.00 € à la carte.
-    APDU : 82 02 00 00 02 00 64
-    (la carte, si elle démarre à 0, se retrouve à 1.00 €)
-    """
-    data = [0x00, 0x64]  # 1.00 € en big-endian
+    # Lecture du solde actuel
+    resp, sw1, sw2 = send_apdu(connection, CLA_WALLET, INS_LIRE_SOLDE,
+                               p1=0, p2=0, data=None, le=2)
+    solde = (resp[0] << 8) | resp[1]
 
-    resp, sw1, sw2 = send_apdu(connection, CLA_WALLET, INS_CREDIT,
-                               p1=0, p2=0, data=data, le=None)
-    print(parse_sw(sw1, sw2))
-    if sw1 == 0x90 and sw2 == 0x00:
-        print("Solde initial de 1.00 € attribué.")
-    print()
+    cible = 100
+    diff = cible - solde
+
+    # Si diff > 0 → CREDIT, si diff < 0 → DEBIT
+    if diff != 0:
+        op = INS_CREDIT if diff > 0 else INS_DEBIT
+        diff = abs(diff)
+        data = [diff >> 8, diff & 0xFF]
+        send_apdu(connection, CLA_WALLET, op, p1=0, p2=0, data=data, le=None)
+
+    print("Solde ajusté à 1.00 €.\n")
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +305,5 @@ def main():
         except Exception:
             pass
 
-
 if __name__ == "__main__":
     main()
-
