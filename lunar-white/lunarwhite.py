@@ -1,128 +1,151 @@
-import smartcard.System as scardsys
-import smartcard.util as scardutil
-import smartcard.Exceptions as scardexcp
+#!/usr/bin/env python3
 
-conn_reader = None
-MODE_SIMULATION = False
-solde_simulation_centimes = 200  # 2.00 € de base en mode simulation
+from smartcard.System import readers
+from smartcard.Exceptions import CardConnectionException
+from smartcard.util import toHexString
 
-def init_smart_card():
-    global conn_reader, MODE_SIMULATION
-    readers = scardsys.readers()
-    if not readers:
-        print("Aucun lecteur détecté -> MODE SIMULATION activé")
-        MODE_SIMULATION = True
+# Même protocole que Lubiana
+CLA_WALLET    = 0x82        # gestion du solde
+INS_LIRE_SOLDE = 0x01       # 82 01 00 00 02 : lire_solde()
+INS_DEBIT      = 0x03       # 82 03 00 00 02 : debit()
+
+PRIX_BOISSON = 0.20         # 20 centimes
+
+
+def ouvrir_lecteur():
+    """Retourne une connexion vers la carte sur le premier lecteur disponible."""
+    r = readers()
+    if not r:
+        print("Aucun lecteur PC/SC détecté.")
+        return None
+
+    print("Lecteurs disponibles :")
+    for i, reader in enumerate(r):
+        print(f"  {i}: {reader}")
+
+    lecteur = r[0]
+    print(f"\nUtilisation du lecteur 0 : {lecteur}")
+
+    conn = lecteur.createConnection()
+    try:
+        conn.connect()
+    except CardConnectionException as e:
+        print(f"Impossible de se connecter à la carte : {e}")
+        return None
+
+    atr = conn.getATR()
+    print(f"ATR : {toHexString(atr)}\n")
+    return conn
+
+
+def lire_solde(conn):
+    """Lit le solde sur la carte avec 82 01 00 00 02, comme dans Lubiana."""
+    apdu = [CLA_WALLET, INS_LIRE_SOLDE, 0x00, 0x00, 0x02]
+    print(f"--> APDU lire solde : {toHexString(apdu)}")
+    data, sw1, sw2 = conn.transmit(apdu)
+    print(f"<-- Réponse : {toHexString(data)}  SW1 SW2 = {sw1:02X} {sw2:02X}")
+
+    if sw1 != 0x90 or sw2 != 0x00 or len(data) != 2:
+        print(f"Erreur lecture solde : SW1={sw1:02X}, SW2={sw2:02X}")
+        return None
+
+    montant_centimes = (data[0] << 8) | data[1]
+    return montant_centimes / 100.0
+
+
+def debiter(conn, montant_euros):
+    """
+    Débite la carte avec l'APDU 82 03 00 00 02 hi lo.
+    C'est exactement l'exemple du sujet pour Lunar White, adapté à ta carte.
+    """
+    centimes = int(round(montant_euros * 100))
+    hi = (centimes >> 8) & 0xFF
+    lo = centimes & 0xFF
+
+    apdu = [CLA_WALLET, INS_DEBIT, 0x00, 0x00, 0x02, hi, lo]
+    print(f"--> APDU débit : {toHexString(apdu)}")
+    data, sw1, sw2 = conn.transmit(apdu)
+    print(f"<-- Réponse : {toHexString(data)}  SW1 SW2 = {sw1:02X} {sw2:02X}")
+
+    if sw1 == 0x90 and sw2 == 0x00:
+        # Débit accepté
+        return True
+    elif sw1 == 0x61:
+        # Dans le TP, 61 xx sert souvent pour "solde insuffisant" ou "capacité max"
+        print("Solde insuffisant ou condition non satisfaite (61 xx).")
+        return False
+    else:
+        print(f"Erreur débit : SW1={sw1:02X}, SW2={sw2:02X}")
+        return False
+
+
+def afficher_menu(solde):
+    print("")
+    print("===== Machine à café - Lunar White =====")
+    print(f"Solde de la carte : {solde:.2f} euros")
+    print("----------------------------------------")
+    print("Choisissez votre boisson :")
+    print("1 - Café (0.20 €)")
+    print("2 - Thé (0.20 €)")
+    print("3 - Chocolat chaud (0.20 €)")
+    print("4 - Annuler / Quitter")
+
+
+def commander_boisson(conn, nom_boisson, prix):
+    solde = lire_solde(conn)
+    if solde is None:
+        print("Impossible de lire le solde, opération annulée.")
+        return
+
+    if solde < prix:
+        print(f"Solde insuffisant ({solde:.2f} €). Boisson non servie.")
+        return
+
+    print(f"Tentative de débit de {prix:.2f} € pour un {nom_boisson}...")
+    if debiter(conn, prix):
+        nouveau_solde = lire_solde(conn)
+        print("Boisson servie. Merci !")
+        if nouveau_solde is not None:
+            print(f"Nouveau solde : {nouveau_solde:.2f} €")
+    else:
+        print("Débit refusé. Boisson non servie.")
+
+
+def main():
+    conn = ouvrir_lecteur()
+    if conn is None:
         return
 
     try:
-        conn_reader = readers[0].createConnection()
-        conn_reader.connect()
-        print("Lecteur OK, ATR :", scardutil.toHexString(conn_reader.getATR()))
-        MODE_SIMULATION = False
-    except scardexcp.NoCardException as e:
-        print("Pas de carte dans le lecteur :", e)
-        print("Passage en MODE SIMULATION")
-        MODE_SIMULATION = True
-    except Exception as e:
-        print("Erreur lecteur :", e)
-        print("Passage en MODE SIMULATION")
-        MODE_SIMULATION = True
+        while True:
+            solde = lire_solde(conn)
+            if solde is None:
+                print("Impossible de lire le solde, arrêt de la machine.")
+                break
 
-def lire_solde():
-    global solde_simulation_centimes
+            afficher_menu(solde)
+            choix = input("Votre choix : ").strip()
 
-    if MODE_SIMULATION:
-        # On travaille uniquement avec la variable globale
-        return solde_simulation_centimes / 100.0
+            if choix == "1":
+                commander_boisson(conn, "café", PRIX_BOISSON)
+            elif choix == "2":
+                commander_boisson(conn, "thé", PRIX_BOISSON)
+            elif choix == "3":
+                commander_boisson(conn, "chocolat chaud", PRIX_BOISSON)
+            elif choix == "4":
+                print("Opération annulée. Au revoir.")
+                break
+            else:
+                print("Choix invalide.")
 
-    # Mode réel : APDU 0x82 0x01 (lire solde, 2 octets)
-    apdu = [0x82, 0x01, 0x00, 0x00, 0x02]
-    data, sw1, sw2 = conn_reader.transmit(apdu)
-    if sw1 == 0x90 and sw2 == 0x00:
-        solde_centimes = (data[0] << 8) + data[1]
-        return solde_centimes / 100.0
-    else:
-        print(f"Erreur lecture solde : {sw1:02X} {sw2:02X}")
-        return None
+    except KeyboardInterrupt:
+        print("\nArrêt de la machine (Ctrl+C).")
+    finally:
+        try:
+            conn.disconnect()
+        except Exception:
+            pass
 
-def debiter_carte(montant_euros):
-    global solde_simulation_centimes
-
-    centimes = int(montant_euros * 100)
-
-    if MODE_SIMULATION:
-        if solde_simulation_centimes < centimes:
-            print("Solde insuffisant (simulation).")
-            return False
-        solde_simulation_centimes -= centimes
-        print("Débit effectué (simulation).")
-        return True
-
-    # Mode réel : APDU 0x82 0x03 (débit)
-    apdu = [
-        0x82, 0x03, 0x00, 0x00, 0x02,
-        (centimes >> 8) & 0xFF,
-        centimes & 0xFF
-    ]
-    data, sw1, sw2 = conn_reader.transmit(apdu)
-
-    if sw1 == 0x90 and sw2 == 0x00:
-        return True
-    elif sw1 == 0x61:
-        print("Solde insuffisant sur la carte.")
-        return False
-    else:
-        print(f"Erreur débit : {sw1:02X} {sw2:02X}")
-        return False
-
-def afficher_menu():
-    print("")
-    print("===== Machine à café - Lunar White =====")
-    print("1 - Afficher le solde de la carte")
-    print("2 - Café (0.20 €)")
-    print("3 - Thé (0.20 €)")
-    print("4 - Chocolat chaud (0.20 €)")
-    print("5 - Quitter")
-
-def commander_boisson(nom_boisson, prix):
-    solde = lire_solde()
-    if solde is None:
-        return
-    print(f"Solde actuel : {solde:.2f} €")
-
-    if solde < prix:
-        print("Solde insuffisant, opération annulée.")
-        return
-
-    if debiter_carte(prix):
-        nouveau_solde = lire_solde()
-        print(f"{nom_boisson} servi. Merci !")
-        if nouveau_solde is not None:
-            print(f"Nouveau solde : {nouveau_solde:.2f} €")
-
-def main():
-    init_smart_card()
-
-    while True:
-        afficher_menu()
-        choix = input("Choix : ")
-
-        if choix == "1":
-            solde = lire_solde()
-            if solde is not None:
-                print(f"Solde actuel : {solde:.2f} €")
-
-        elif choix == "2":
-            commander_boisson("Café", 0.20)
-        elif choix == "3":
-            commander_boisson("Thé", 0.20)
-        elif choix == "4":
-            commander_boisson("Chocolat chaud", 0.20)
-        elif choix == "5":
-            print("Au revoir.")
-            break
-        else:
-            print("Choix invalide.")
 
 if __name__ == "__main__":
     main()
