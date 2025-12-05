@@ -79,18 +79,18 @@ def add_bonus():
     cursor = cnx.cursor()
 
     # Vérifier que l'étudiant existe
+    # Selon le MCD (Figure 3), etu_num est la clé primaire dans Etudiant
     cursor.execute("SELECT 1 FROM Etudiant WHERE etu_num = %s", (etu_num,))
     if cursor.fetchone() is None:
         print("Aucun étudiant avec ce numéro.")
         cursor.close()
         return
 
-    # Insérer un bonus de +1.00 euro
-    # ⚠️ colonne EXACTE : type_opeartion (faute du sujet)
     sql = """
-        INSERT INTO Compte (etu_num, opr_date, opr_montant, opr_libelle, type_opeartion)
+        INSERT INTO Compte (etu_num, opr_date, opr_montant, opr_libelle, type_operation)
         VALUES (%s, NOW(), %s, %s, %s)
     """
+    # Le montant du bonus est de 1.00 euro [cite: 55, 57]
     val = (etu_num, 1.00, com, "Bonus")
     cursor.execute(sql, val)
     cnx.commit()
