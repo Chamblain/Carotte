@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
 
-from flask import Flask, request, redirect, url_for, render_template_string
+from flask import Flask, request, render_template_string
 import mysql.connector
 
-# ⚠️ Même config que dans ton rodelika.py
+# ---------- CONFIGURATION BASE DE DONNÉES ----------
+
 DB_CONFIG = {
-    "user": "rodelika",           # adapte si besoin
-    "password": "R0deLika123!",   # adapte si besoin
+    "user": "rodelika",
+    "password": "R0deLika123!",
     "host": "localhost",
     "database": "purpledragon",
 }
 
 def get_connection():
+    """Retourne une nouvelle connexion MySQL."""
     return mysql.connector.connect(**DB_CONFIG)
+
+
+# ---------- APPLICATION FLASK ----------
 
 app = Flask(__name__)
 
 # ----- CSS commun (inclus dans chaque template) -----
+
 COMMON_CSS = """
 <style>
 /* === Palette === */
@@ -252,7 +258,8 @@ input[type="number"]:focus {
 </style>
 """
 
-# ----- Templates avec CSS intégré -----
+# ----- TEMPLATES HTML -----
+
 MENU_TEMPLATE = f"""
 <!doctype html>
 <html lang="fr">
@@ -459,41 +466,58 @@ BONUS_TEMPLATE = f"""
 </html>
 """
 
-# ----------------- Routes Flask -----------------
+# ---------- ROUTES FLASK (logique équivalente à rodelika.py) ----------
 
 @app.route("/")
 def index():
     return render_template_string(MENU_TEMPLATE)
 
+
 @app.route("/etudiants")
 def liste_etudiants():
+    """Équivalent de get_list_student(), mais affiché en HTML."""
     cnx = get_connection()
     cursor = cnx.cursor()
-    cursor.execute("SELECT Etudiant.* FROM Etudiant")
-    etudiants = cursor.fetchall()
-    cursor.close()
-    cnx.close()
+    try:
+        cursor.execute("SELECT Etudiant.* FROM Etudiant")
+        etudiants = cursor.fetchall()
+    finally:
+        cursor.close()
+        cnx.close()
     return render_template_string(LISTE_ETUDIANTS_TEMPLATE, etudiants=etudiants)
+
 
 @app.route("/soldes")
 def soldes_etudiants():
+    """
+    Version web de get_list_student_with_sold() :
+    - On calcule SUM(Compte.opr_montant) par étudiant.
+    - LEFT JOIN pour inclure aussi les étudiants sans opérations (solde = 0).
+    """
     cnx = get_connection()
     cursor = cnx.cursor()
     sql = """
-        SELECT Etudiant.etu_num, Etudiant.etu_nom, Etudiant.etu_prenom,
+        SELECT Etudiant.etu_num,
+               Etudiant.etu_nom,
+               Etudiant.etu_prenom,
                COALESCE(SUM(Compte.opr_montant), 0) AS solde
         FROM Etudiant
         LEFT JOIN Compte ON Etudiant.etu_num = Compte.etu_num
         GROUP BY Etudiant.etu_num, Etudiant.etu_nom, Etudiant.etu_prenom
+        ORDER BY Etudiant.etu_num
     """
-    cursor.execute(sql)
-    soldes = cursor.fetchall()
-    cursor.close()
-    cnx.close()
+    try:
+        cursor.execute(sql)
+        soldes = cursor.fetchall()
+    finally:
+        cursor.close()
+        cnx.close()
     return render_template_string(SOLDES_TEMPLATE, soldes=soldes)
+
 
 @app.route("/etudiant/nouveau", methods=["GET", "POST"])
 def nouvel_etudiant():
+    """Version web de new_student()."""
     message = None
     if request.method == "POST":
         nom = request.form.get("nom", "").strip()
@@ -501,25 +525,34 @@ def nouvel_etudiant():
         if nom and prenom:
             cnx = get_connection()
             cursor = cnx.cursor()
-            sql = """INSERT INTO Etudiant (etu_num, etu_nom, etu_prenom)
-                     VALUES (NULL, %s, %s)"""
-            cursor.execute(sql, (nom, prenom))
-            cnx.commit()
-            message = f"✅ Étudiant ajouté avec l'id {cursor.lastrowid}"
-            cursor.close()
-            cnx.close()
+            try:
+                sql = """INSERT INTO Etudiant (etu_num, etu_nom, etu_prenom)
+                         VALUES (NULL, %s, %s)"""
+                cursor.execute(sql, (nom, prenom))
+                cnx.commit()
+                message = f"✅ Étudiant ajouté avec l'id {cursor.lastrowid}"
+            except Exception as e:
+                cnx.rollback()
+                message = f"❌ Erreur lors de l'ajout de l'étudiant : {e}"
+            finally:
+                cursor.close()
+                cnx.close()
         else:
             message = "⚠️ Nom et prénom obligatoires."
     return render_template_string(NOUVEL_ETUDIANT_TEMPLATE, message=message)
 
+
 @app.route("/bonus", methods=["GET", "POST"])
 def bonus():
+    """Version web de add_bonus() : ajoute un bonus de 1€ si l'étudiant existe."""
     message = None
     erreur = None
+
     if request.method == "POST":
         etu_num_str = request.form.get("etu_num", "").strip()
         commentaire = request.form.get("commentaire", "").strip()
 
+        # Validation de l'ID
         try:
             etu_num = int(etu_num_str)
         except ValueError:
@@ -533,26 +566,33 @@ def bonus():
         cnx = get_connection()
         cursor = cnx.cursor()
 
-        # Vérifier l'existence de l'étudiant
-        cursor.execute("SELECT 1 FROM Etudiant WHERE etu_num = %s", (etu_num,))
-        if cursor.fetchone() is None:
-            erreur = "❌ Aucun étudiant trouvé avec ce numéro."
+        try:
+            # Vérifier que l'étudiant existe (comme dans rodelika.py)
+            cursor.execute("SELECT 1 FROM Etudiant WHERE etu_num = %s", (etu_num,))
+            if cursor.fetchone() is None:
+                erreur = "❌ Aucun étudiant trouvé avec ce numéro."
+                return render_template_string(BONUS_TEMPLATE, message=message, erreur=erreur)
+
+            # Insertion du bonus de 1.00 € (mêmes colonnes que rodelika.py)
+            sql = """
+                INSERT INTO Compte (etu_num, opr_date, opr_montant, opr_libelle, type_operation)
+                VALUES (%s, NOW(), %s, %s, %s)
+            """
+            cursor.execute(sql, (etu_num, 1.00, commentaire, "Bonus"))
+            cnx.commit()
+            message = "🎉 Bonus de +1.00 € ajouté avec succès !"
+
+        except Exception as e:
+            cnx.rollback()
+            erreur = f"❌ Erreur lors de l'ajout du bonus : {e}"
+        finally:
             cursor.close()
             cnx.close()
-            return render_template_string(BONUS_TEMPLATE, message=message, erreur=erreur)
-
-        # Insertion du bonus — avec la faute *opeartion* comme dans votre schéma
-        sql = """
-            INSERT INTO Compte (etu_num, opr_date, opr_montant, opr_libelle, type_opeartion)
-            VALUES (%s, NOW(), %s, %s, %s)
-        """
-        cursor.execute(sql, (etu_num, 1.00, commentaire, "Bonus"))
-        cnx.commit()
-        cursor.close()
-        cnx.close()
-        message = "🎉 Bonus de +1.00 € ajouté avec succès !"
 
     return render_template_string(BONUS_TEMPLATE, message=message, erreur=erreur)
+
+
+# ---------- LANCEMENT ----------
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

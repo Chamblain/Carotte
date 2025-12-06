@@ -1,309 +1,256 @@
-def afficher_menu():
-    print("==== LUBIANA ====")
-    print("1. Afficher version carte")
-    print("2. Afficher données carte")
-    print("3. Attribuer la carte")
-    print("4. Créditer la carte (solde initial)")
-    print("5. Lire le solde")
-    print("0. Quitter")
-
-
-def main():
-    while True:
-        afficher_menu()
-        choix = input("Choix : ")
-
-        if choix == "1":
-            print("Lecture version (à implémenter)")
-        elif choix == "2":
-            print("Lecture données (à implémenter)")
-        elif choix == "3":
-            print("Attribution carte (à implémenter)")
-        elif choix == "4":
-            print("Crédit initial (à implémenter)")
-        elif choix == "5":
-            print("Lecture solde (à implémenter)")
-        elif choix == "0":
-            print("Au revoir")
-            break
-        else:
-            print("Choix invalide")
-
 #!/usr/bin/env python3
 """
-Client de personnalisation : Lubiana.
-
+Client de personnalisation : Lubiana (Version Corrigée)
 Fonctionnalités :
-- Afficher la version de la carte
-- Afficher les données de la carte (personnalisation)
-- Attribuer la carte (écrire la personnalisation)
-- Mettre le solde initial (1.00 €)
-- Consulter le solde
+- Gestion automatique du déblocage PUK (12345678)
+- Gestion des erreurs de communication T=0
+- Attribution et Solde
 """
 from smartcard.System import readers
 from smartcard.Exceptions import CardConnectionException
 from smartcard.util import toHexString
+import json
+import os
+import random
+import time
 
-# Classes et instructions conformes au sujet
-CLA_PERSO  = 0x81  # personnalisation
-CLA_WALLET = 0x82  # gestion du solde
+# --- CONSTANTES ---
+CLA_PERSO   = 0x81
+CLA_WALLET  = 0x82
+CLA_SEC     = 0x80
 
-INS_VERSION     = 0x00  # 81 00 00 00 04 : version()
-INS_INTRO_PERSO = 0x01  # 81 01 00 00 P3 : intro_perso()
-INS_LIRE_PERSO  = 0x02  # 81 02 00 00 P3 : lire_perso()
+INS_VERSION     = 0x00
+INS_INTRO_PERSO = 0x01
+INS_LIRE_PERSO  = 0x02
 
-INS_LIRE_SOLDE  = 0x01  # 82 01 00 00 02 : lire_solde()
-INS_CREDIT      = 0x02  # 82 02 00 00 02 : credit()
-INS_DEBIT       = 0x03  # 82 03 00 00 02 : debit()
+INS_LIRE_SOLDE  = 0x01
+INS_CREDIT      = 0x02
+INS_DEBIT       = 0x03
+
+INS_VERIFY_PIN  = 0x20
+INS_UNLOCK_PUK  = 0x21
+INS_SET_PIN     = 0x30
 
 MAX_PERSO = 32
+DEFAULT_PUK = [1, 2, 3, 4, 5, 6, 7, 8] # PUK codé en dur dans le C
+PINS_FILE   = "pins.json"
+CURRENT_ATR = None
 
+# --- GESTION FICHIER PIN ---
+def load_pins():
+    if not os.path.exists(PINS_FILE): return {}
+    try:
+        with open(PINS_FILE, "r") as f: return json.load(f)
+    except: return {}
 
+def save_pins(pins):
+    with open(PINS_FILE, "w") as f: json.dump(pins, f, indent=2)
 
-# ---------------------------------------------------------------------------
-# Fonctions utilitaires
-# ---------------------------------------------------------------------------
+def get_stored_pin():
+    global CURRENT_ATR
+    if not CURRENT_ATR: return None
+    return load_pins().get(CURRENT_ATR)
 
-def select_first_reader():
-    """Retourne une connexion vers la carte sur le premier lecteur disponible."""
+# --- FONCTIONS BAS NIVEAU ---
+def select_reader():
+    global CURRENT_ATR
     r = readers()
     if not r:
-        print("Aucun lecteur PC/SC détecté.")
+        print("Erreur: Aucun lecteur détecté.")
         return None
-
-    print("Lecteurs disponibles :")
-    for i, reader in enumerate(r):
-        print(f"  {i}: {reader}")
-
-    reader = r[0]
-    print(f"\nUtilisation du lecteur 0 : {reader}")
-
-    connection = reader.createConnection()
+    
+    connection = r[0].createConnection()
     try:
-        # On laisse PC/SC choisir le protocole (T=0/T=1)
         connection.connect()
-    except CardConnectionException as e:
-        print(f"Impossible de se connecter à la carte : {e}")
+        CURRENT_ATR = toHexString(connection.getATR())
+        print(f"Connecté au lecteur. ATR: {CURRENT_ATR}\n")
+        return connection
+    except Exception as e:
+        print(f"Erreur connexion: {e}")
         return None
 
-    atr = connection.getATR()
-    print(f"ATR : {toHexString(atr)}\n")
-    return connection
-
-
-
-def send_apdu(connection, cla, ins, p1=0x00, p2=0x00, data=None, le=None):
-    """
-    Envoie une APDU et retourne (resp_data, sw1, sw2).
-    data est une liste d'octets (ou None).
-    le est soit None, soit un entier (longueur attendue).
-    """
+def send_apdu(connection, cla, ins, p1=0, p2=0, data=None, le=None):
     apdu = [cla, ins, p1, p2]
-
-    if data is None:
-        data = []
-
-    if len(data) > 0:
-        apdu.append(len(data))  # P3 = Lc
+    if data:
+        apdu.append(len(data))
         apdu.extend(data)
-        if le is not None:
-            # Cas APDU avec Lc et Le : rare dans notre TP, on ne le gère pas ici
-            raise ValueError("APDU Lc+Le non utilisée dans ce TP")
     else:
-        if le is not None:
-            apdu.append(le)  # P3 = Le
-        else:
-            apdu.append(0)   # P3 = 0
-
-    print(f"--> APDU : {toHexString(apdu)}")
-
-    resp, sw1, sw2 = connection.transmit(apdu)
-    print(f"<-- Réponse : {toHexString(resp)}  SW1 SW2 = {sw1:02X} {sw2:02X}")
-
-    return resp, sw1, sw2
-
+        apdu.append(le if le is not None else 0)
+    
+    try:
+        resp, sw1, sw2 = connection.transmit(apdu)
+        return resp, sw1, sw2
+    except Exception as e:
+        print(f"Erreur transmission APDU: {e}")
+        return [], 0x00, 0x00
 
 def parse_sw(sw1, sw2):
-    """Retourne un message lisible pour SW1/SW2."""
-    if sw1 == 0x90 and sw2 == 0x00:
-        return "OK (90 00)"
+    if sw1 == 0x90: return "OK"
+    if sw1 == 0x61: return f"Attention (61 {sw2:02X})"
+    if sw1 == 0x6C: return f"Erreur Longueur (Attendu: {sw2})"
+    if sw1 == 0x69 and sw2 == 0x83: return "BLOQUÉ"
+    if sw1 == 0x69 and sw2 == 0x82: return "NON AUTHENTIFIÉ"
+    if sw1 == 0x63: return f"Échec (Essais restants: {sw2})"
+    return f"Erreur Inconnue ({sw1:02X} {sw2:02X})"
 
-    if sw1 == 0x6C:
-        return f"Taille incorrecte, taille attendue = {sw2}"
+# --- FONCTIONS MÉTIER ---
 
-    if sw1 == 0x61:
-        # Dans ton TP, 61 00 est utilisé pour capacité max ou solde insuffisant
-        return f"Condition non satisfaite (61 {sw2:02X})"
+def unblock_card(connection):
+    """Débloque la carte avec le PUK par défaut"""
+    print("\n--- DÉBLOCAGE DE LA CARTE ---")
+    print(f"Utilisation du PUK par défaut : {DEFAULT_PUK}")
+    resp, sw1, sw2 = send_apdu(connection, CLA_SEC, INS_UNLOCK_PUK, data=DEFAULT_PUK)
+    
+    if sw1 == 0x90:
+        print("SUCCÈS : La carte est débloquée !")
+        print("Les compteurs sont réinitialisés.")
+        # On réinitialise la session PIN dans le script aussi, bien que la carte le fasse
+        return True
+    else:
+        print(f"ÉCHEC du déblocage : {parse_sw(sw1, sw2)}")
+        return False
 
-    if sw1 == 0x6D:
-        return "INS inconnu (6D XX)"
+def verify_pin_flow(connection):
+    """Gère la vérification PIN et propose le déblocage si nécessaire"""
+    pin = get_stored_pin()
+    if not pin:
+        pin = "0000"
+        print("Aucun PIN enregistré, essai avec '0000'.")
+    
+    print(f"Vérification PIN ({pin})...")
+    data_pin = [int(c) for c in pin]
+    
+    resp, sw1, sw2 = send_apdu(connection, CLA_SEC, INS_VERIFY_PIN, data=data_pin)
+    
+    if sw1 == 0x90:
+        print("PIN Vérifié.")
+        return True
+    elif sw1 == 0x69 and sw2 == 0x83:
+        print("CARTE BLOQUÉE !")
+        choix = input("Voulez-vous tenter de la débloquer avec le PUK admin ? (o/n) : ")
+        if choix.lower() == 'o':
+            if unblock_card(connection):
+                # Après un déblocage, il faut souvent refaire le verify ou on est considéré comme non-authentifié pour certaines ops
+                # Mais unlock_with_puk dans le C remet session_pin_ok à 0.
+                print("Carte débloquée. Veuillez réessayer l'opération.")
+        return False
+    else:
+        print(f"Erreur PIN : {parse_sw(sw1, sw2)}")
+        return False
 
-    if sw1 == 0x6E:
-        return "Classe (CLA) inconnue (6E XX)"
-
-    return f"Code SW inconnu : {sw1:02X} {sw2:02X}"
-
-
-# ---------------------------------------------------------------------------
-# Fonctions métier (version, perso, solde, crédit, débit)
-# ---------------------------------------------------------------------------
-
-def get_version(connection):
-    resp, sw1, sw2 = send_apdu(connection, CLA_PERSO, INS_VERSION,
-                               p1=0, p2=0, data=None, le=4)
-    print(parse_sw(sw1, sw2))
-    if sw1 == 0x90 and sw2 == 0x00:
-        # resp contient les octets ASCII de "1.00"
-        version_str = "".join(chr(b) for b in resp)
-        print(f"Version de la carte : {version_str}")
-    print()
-
-
-def intro_perso(connection):
-    name = input("Nom à écrire dans la carte (max 32 caractères) : ").strip()
-    data = name.encode("ascii", errors="ignore")
-    if len(data) == 0:
-        print("Nom vide, opération annulée.\n")
-        return
-    if len(data) > MAX_PERSO:
-        print(f"Nom trop long (>{MAX_PERSO}), il sera tronqué.")
-        data = data[:MAX_PERSO]
-
-    resp, sw1, sw2 = send_apdu(connection, CLA_PERSO, INS_INTRO_PERSO,
-                               p1=0, p2=0, data=list(data), le=None)
-    print(parse_sw(sw1, sw2))
-    print()
-
-
-def lire_perso(connection):
-    print("Lecture de la personnalisation (tentative 1, P3=0)...")
-    resp, sw1, sw2 = send_apdu(connection, CLA_PERSO, INS_LIRE_PERSO,
-                               p1=0, p2=0, data=None, le=0)
-    msg = parse_sw(sw1, sw2)
-    print(msg)
-
+def lire_nom(connection):
+    # 1. Demander la taille (Le=0)
+    resp, sw1, sw2 = send_apdu(connection, CLA_PERSO, INS_LIRE_PERSO, le=0)
+    
     if sw1 == 0x6C:
         taille = sw2
-        print(f"Nouvelle tentative avec taille = {taille}...")
-        resp, sw1, sw2 = send_apdu(connection, CLA_PERSO, INS_LIRE_PERSO,
-                                   p1=0, p2=0, data=None, le=taille)
-        print(parse_sw(sw1, sw2))
-        if sw1 == 0x90 and sw2 == 0x00:
-            name = "".join(chr(b) for b in resp)
-            print(f"Nom stocké dans la carte : {name}")
-    elif sw1 == 0x90 and sw2 == 0x00:
-        name = "".join(chr(b) for b in resp)
-        print(f"Nom stocké dans la carte : {name}")
+        if taille == 0:
+            print("Aucun nom enregistré (Taille 0).")
+            return
+        # 2. Lire la donnée
+        resp, sw1, sw2 = send_apdu(connection, CLA_PERSO, INS_LIRE_PERSO, le=taille)
+    
+    if sw1 == 0x90:
+        # Filtrer les caractères non imprimables (cas où l'eeprom est sale)
+        nom = "".join([chr(x) for x in resp if 32 <= x <= 126])
+        print(f"Nom sur la carte : {nom}")
+    else:
+        print(f"Impossible de lire le nom : {parse_sw(sw1, sw2)}")
 
-    print()
-
+def ecrire_nom(connection):
+    nom = input("Entrez le nouveau nom : ").strip()
+    data = [ord(c) for c in nom[:MAX_PERSO]]
+    resp, sw1, sw2 = send_apdu(connection, CLA_PERSO, INS_INTRO_PERSO, data=data)
+    print(f"Résultat : {parse_sw(sw1, sw2)}")
 
 def lire_solde(connection):
-    # APDU : 82 01 00 00 02
-    resp, sw1, sw2 = send_apdu(connection, CLA_WALLET, INS_LIRE_SOLDE,
-                               p1=0, p2=0, data=None, le=2)
-    print(parse_sw(sw1, sw2))
-    if sw1 == 0x90 and sw2 == 0x00 and len(resp) == 2:
-        # big-endian, comme dans bourse.c
-        montant = (resp[0] << 8) | resp[1]
-        euros = montant / 100.0
-        print(f"Solde : {montant} centimes ({euros:.2f} €)")
-    print()
-
-
-def mettre_solde_initial(connection):
-    # Lecture du solde actuel
-    resp, sw1, sw2 = send_apdu(connection, CLA_WALLET, INS_LIRE_SOLDE,
-                               p1=0, p2=0, data=None, le=2)
-    solde = (resp[0] << 8) | resp[1]
-
-    cible = 100
-    diff = cible - solde
-
-    # Si diff > 0 → CREDIT, si diff < 0 → DEBIT
-    if diff != 0:
-        op = INS_CREDIT if diff > 0 else INS_DEBIT
-        diff = abs(diff)
-        data = [diff >> 8, diff & 0xFF]
-        send_apdu(connection, CLA_WALLET, op, p1=0, p2=0, data=data, le=None)
-
-    print("Solde ajusté à 1.00 €.\n")
-
-
-
-
-# ---------------------------------------------------------------------------
-# Boucle principale (menu)
-# ---------------------------------------------------------------------------
-
-def menu(connection):
-    """Boucle principale de dialogue avec la carte."""
-    while True:
-        print("---------------------------------------------")
-        print("-- Logiciel de personnalisation : Lubiana --")
-        print("---------------------------------------------")
-        print("1. Afficher la version de carte")
-        print("2. Afficher les données de la carte")
-        print("3. Attribuer la carte")
-        print("4. Mettre le solde initial")
-        print("5. Consulter le solde")
-        print("6. Quitter")
-        choice = input("Votre choix : ").strip()
-
-        try:
-            if choice == "1":
-                # Afficher la version de la carte
-                get_version(connection)
-
-            elif choice == "2":
-                # Afficher les données de la carte (personnalisation)
-                lire_perso(connection)
-
-            elif choice == "3":
-                # Attribuer la carte (écriture de la personnalisation)
-                intro_perso(connection)
-
-            elif choice == "4":
-                # Mettre le solde initial (1.00 €)
-                mettre_solde_initial(connection)
-
-            elif choice == "5":
-                # Consulter le solde
-                lire_solde(connection)
-
-            elif choice == "6":
-                print("Au revoir.")
-                break
-
-            else:
-                print("Choix incorrect.\n")
-
-        except CardConnectionException:
-            
-            pass
-
-        except Exception as e:
-            # Là seulement on affiche un vrai message d'erreur Python
-            print(f"[ERREUR INTERNE] {e}\n")
-
-
-
-def main():
-    # On se connecte au lecteur une fois
-    connection = select_first_reader()
-    if connection is None:
-        print("Impossible de se connecter à la carte. Vérifie le lecteur / la carte.")
+    resp, sw1, sw2 = send_apdu(connection, CLA_WALLET, INS_LIRE_SOLDE, le=2)
+    
+    if sw1 == 0x69 and sw2 == 0x83:
+        print("Lecture impossible : Carte bloquée.")
+        if input("Débloquer ? (o/n) ").lower() == 'o':
+            unblock_card(connection)
         return
 
-    try:
-        menu(connection)   # <-- reste dans le menu tant que tu ne choisis pas "Quitter"
-    except KeyboardInterrupt:
-        print("\nArrêt demandé par l'utilisateur (Ctrl+C).")
-    finally:
+    if sw1 == 0x90:
+        val = (resp[0] << 8) | resp[1]
+        print(f"Solde actuel : {val/100:.2f} €")
+    else:
+        print(f"Erreur lecture solde : {parse_sw(sw1, sw2)}")
+
+def set_pin_interaction(connection):
+    if not verify_pin_flow(connection):
+        return
+
+    new_pin_str = f"{random.randint(0,9999):04d}"
+    print(f"Génération nouveau PIN : {new_pin_str}")
+    data = [int(c) for c in new_pin_str]
+    
+    resp, sw1, sw2 = send_apdu(connection, CLA_SEC, INS_SET_PIN, data=data)
+    
+    if sw1 == 0x90:
+        print("PIN modifié avec succès sur la carte.")
+        pins = load_pins()
+        pins[CURRENT_ATR] = new_pin_str
+        save_pins(pins)
+        print("PIN sauvegardé dans pins.json")
+    else:
+        print(f"Erreur changement PIN : {parse_sw(sw1, sw2)}")
+
+def mettre_solde(connection):
+    if not verify_pin_flow(connection): return
+    
+    # Lire solde d'abord
+    resp, sw1, sw2 = send_apdu(connection, CLA_WALLET, INS_LIRE_SOLDE, le=2)
+    if sw1 != 0x90: return
+    current = (resp[0] << 8) | resp[1]
+    
+    target = 100 # 1.00 euro
+    diff = target - current
+    
+    if diff == 0:
+        print("Solde déjà à 1.00 €")
+        return
+        
+    op = INS_CREDIT if diff > 0 else INS_DEBIT
+    val = abs(diff)
+    data = [val >> 8, val & 0xFF]
+    
+    resp, sw1, sw2 = send_apdu(connection, CLA_WALLET, op, data=data)
+    print(f"Mise à jour solde : {parse_sw(sw1, sw2)}")
+
+# --- MENU ---
+def main():
+    conn = select_reader()
+    if not conn: return
+
+    while True:
+        print("\n--- LUBIANA ---")
+        print("1. Version")
+        print("2. Lire Nom")
+        print("3. Écrire Nom")
+        print("4. Mettre Solde à 1€")
+        print("5. Consulter Solde")
+        print("6. Nouveau PIN")
+        print("7. Débloquer Carte (Force)")
+        print("8. Quitter")
+        
+        c = input("Choix : ")
+        
         try:
-            connection.disconnect()
-        except Exception:
-            pass
+            if c == '1':
+                resp, sw1, sw2 = send_apdu(conn, CLA_PERSO, INS_VERSION, le=4)
+                if sw1==0x90: print(f"Version: {''.join(chr(x) for x in resp)}")
+            elif c == '2': lire_nom(conn)
+            elif c == '3': ecrire_nom(conn)
+            elif c == '4': mettre_solde(conn)
+            elif c == '5': lire_solde(conn)
+            elif c == '6': set_pin_interaction(conn)
+            elif c == '7': unblock_card(conn)
+            elif c == '8': break
+        except Exception as e:
+            print(f"Erreur critique: {e}")
+            conn = select_reader() # Tentative reconnexion
 
 if __name__ == "__main__":
     main()
