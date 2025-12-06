@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import smartcard.System as scardsys
 import smartcard.util as scardutil
 import smartcard.Exceptions as scardexcp
@@ -52,9 +53,19 @@ def init_db():
 # APDU helpers
 # -----------------------------------------
 def send_apdu(apdu):
-    """Envoie une APDU brute et retourne (data, sw1, sw2)."""
-    data, sw1, sw2 = conn_reader.transmit(apdu)
-    return data, sw1, sw2
+    """Envoie une APDU brute et retourne (data, sw1, sw2).
+
+    En cas d'erreur de transmission (CardConnectionException),
+    on intercepte l'exception pour éviter le crash du programme.
+    """
+    try:
+        data, sw1, sw2 = conn_reader.transmit(apdu)
+        return data, sw1, sw2
+    except scardexcp.CardConnectionException as e:
+        print("Erreur de transmission APDU :", e)
+        # On renvoie un status d'erreur générique
+        return [], 0x6F, 0x00
+
 
 # -----------------------------------------
 # Helpers carte / BDD
@@ -86,11 +97,11 @@ def lire_personnalisation():
         text = None
     return text
 
+
 def extraire_num_etudiant_depuis_perso(perso):
     """
     On suppose que la personnalisation commence par le numéro d'étudiant en ASCII,
-    suivi d'un séparateur éventuel (ex: "1;Thompson;Allan").
-    On lit les chiffres au début de la chaîne.
+    par ex: "3;Nom;Prenom". On lit les chiffres au début de la chaîne.
     """
     if not perso:
         return None
@@ -141,7 +152,7 @@ def lire_solde_centimes():
         print(f"Erreur lecture solde (SW1={sw1:02X}, SW2={sw2:02X})")
         return None
 
-    # big-endian: MSB, LSB (comme dans le C)
+    # big-endian: MSB, LSB (comme dans le code C)
     return (data[0] << 8) + data[1]
 
 def credit_carte_centimes(montant_centimes):
@@ -199,12 +210,12 @@ def afficher_infos_carte():
 
         if row:
             nom, prenom = row
-            print(f"Nom  : {nom}")
+            print(f"Nom    : {nom}")
             print(f"Prénom : {prenom}")
         else:
             print("Étudiant introuvable dans la base.")
 
-        # Le reste de la personnalisation brute (après le numéro)
+        # Reste de la perso brute (après le numéro + éventuel ';')
         reste = perso[len(str(etu_num)):]
         if reste.startswith(";"):
             reste = reste[1:]
@@ -217,38 +228,56 @@ def afficher_infos_carte():
 
 def consulter_bonus():
     """
-    Consulte les bonus attribués mais non encore transférés.
+    Consulte les bonus attribués :
 
-    Avec la BDD fournie :
-      - table Compte
-      - champ type_operation
-      - valeur 'Bonus' pour les bonus initiaux
-      - valeur 'Bonus transfere' quand ils sont transférés
+      - nombre total de bonus gagnés (Bonus + Bonus transfere)
+      - nombre de bonus encore disponibles (type_operation = 'Bonus')
+      - montant disponible (somme des 'Bonus' non transférés)
     """
     etu_num = get_etu_num()
     cursor = db.cursor()
 
-    sql = """
-        SELECT COALESCE(SUM(opr_montant), 0)
+    # Nombre total de bonus (toutes les lignes Bonus ou Bonus transfere)
+    sql_total = """
+        SELECT COUNT(*)
+        FROM Compte
+        WHERE etu_num = %s
+          AND type_operation IN ('Bonus', 'Bonus transfere')
+    """
+    cursor.execute(sql_total, (etu_num,))
+    row = cursor.fetchone()
+    nb_total = row[0] if row is not None else 0
+
+    # Bonus disponibles (type_operation = 'Bonus' uniquement)
+    sql_dispo = """
+        SELECT COALESCE(COUNT(*), 0) AS nb_dispo,
+               COALESCE(SUM(opr_montant), 0) AS montant_dispo
         FROM Compte
         WHERE etu_num = %s
           AND type_operation = 'Bonus'
     """
-    cursor.execute(sql, (etu_num,))
+    cursor.execute(sql_dispo, (etu_num,))
     row = cursor.fetchone()
     cursor.close()
 
-    total = row[0] if row is not None else Decimal("0.00")
-    print(f"Bonus disponibles pour l'étudiant {etu_num} : {total:.2f} €")
+    nb_dispo = row[0] if row is not None else 0
+    montant_dispo = row[1] if row is not None and row[1] is not None else Decimal("0.00")
+
+    print("------ Bonus ------")
+    print(f"Étudiant : {etu_num}")
+    print(f"Nombre total de bonus gagnés      : {nb_total}")
+    print(f"Nombre de bonus encore disponibles: {nb_dispo}")
+    print(f"Montant de bonus disponibles      : {montant_dispo:.2f} €")
+    print("-------------------")
 
 def transferer_bonus():
     """
     Transfère les bonus disponibles sur la carte ET marque en base
     qu'ils sont transférés ('Bonus' -> 'Bonus transfere').
 
-    Avec la structure fournie :
-      - Type(type_operation)
-      - valeurs : 'Bonus', 'Recharge', 'Depense', 'Bonus transfere'
+    - somme tous les 'Bonus' (même s'il y en a plusieurs)
+    - crédite la carte
+    - met à jour la base en transaction ACID
     """
     etu_num = get_etu_num()
     cursor = db.cursor()
@@ -290,7 +319,7 @@ def transferer_bonus():
         # 3) Mise à jour des lignes "Bonus" -> "Bonus transfere"
         sql_update = """
             UPDATE Compte
-            SET type_operation = 'Bonus transfere'
+            SET type_operation = 'Bonus transféré'
             WHERE etu_num = %s
               AND type_operation = 'Bonus'
         """
@@ -307,7 +336,7 @@ def transferer_bonus():
 
 def consulter_solde_carte():
     """
-    Lecture du solde via APDU 82 01.
+    Lecture du solde via APDU 0x82 0x01.
     Affiche le solde en euros.
     """
     cents = lire_solde_centimes()
@@ -323,9 +352,8 @@ def recharger_cb():
     Simulation d'un paiement par carte bancaire :
       - demande du montant
       - simulation de la validation CB
-      - crédit de la carte via APDU 82 02
+      - crédit de la carte via APDU 0x82 0x02
       - insertion d'une ligne 'Recharge' dans Compte
-        (cohérent avec la table Type)
     """
     etu_num = get_etu_num()
 
@@ -380,8 +408,8 @@ def afficher_menu():
     print("1 - Afficher mes informations")
     print("2 - Consulter mes bonus")
     print("3 - Transférer mes bonus sur ma carte")
-    print("4 - Consulter mon solde")
-    print("5 - Recharger par CB")
+    print("4 - Consulter le crédit disponible sur ma carte")
+    print("5 - Recharger avec ma carte bancaire")
     print("6 - Quitter")
 
 # -----------------------------------------
